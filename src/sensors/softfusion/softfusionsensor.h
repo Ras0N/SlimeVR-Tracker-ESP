@@ -32,14 +32,18 @@ namespace SlimeVR::Sensors {
 template <template <typename I2CImpl> typename T, typename I2CImpl>
 class SoftFusionSensor : public Sensor {
 	using imu = T<I2CImpl>;
-
+	#if IMU == IMU_ICM42688
+	using RawSensorT = 
+		typename std::conditional<false,int32_t,int16_t>::type;
+	#else
 	static constexpr bool Uses32BitSensorData
 		= requires(imu& i) { i.Uses32BitSensorData; };
 
 	using RawSensorT =
 		typename std::conditional<Uses32BitSensorData, int32_t, int16_t>::type;
+	#endif
 	using RawVectorT = std::array<RawSensorT, 3>;
-
+	
 	static constexpr auto UpsideDownCalibrationInit = true;
 	static constexpr auto GyroCalibDelaySeconds = 5;
 	static constexpr auto GyroCalibSeconds = 5;
@@ -53,6 +57,11 @@ class SoftFusionSensor : public Sensor {
 		= ((32768. / imu::GyroSensitivity) / 32768.) * (PI / 180.0);
 	static constexpr double AScale = CONST_EARTH_GRAVITY / imu::AccelSensitivity;
 
+	#if IMU == IMU_ICM_42688
+		static constexpr size_t MotionlessCalibDataSize() {
+			return 0;
+		}
+	#else
 	static constexpr bool HasMotionlessCalib
 		= requires(imu& i) { typename imu::MotionlessCalibrationData; };
 	static constexpr size_t MotionlessCalibDataSize() {
@@ -62,6 +71,7 @@ class SoftFusionSensor : public Sensor {
 			return 0;
 		}
 	}
+	#endif
 
 	bool detected() const {
 		const auto value = m_sensor.i2c.readReg(imu::Regs::WhoAmI::reg);
@@ -270,7 +280,10 @@ public:
 		}
 
 		bool initResult = false;
-
+		
+		#if IMU == IMU_ICM42688
+			initResult = m_sensor.initialize();
+		#else
 		if constexpr (HasMotionlessCalib) {
 			typename imu::MotionlessCalibrationData calibData;
 			std::memcpy(&calibData, m_calibration.MotionlessData, sizeof(calibData));
@@ -278,6 +291,7 @@ public:
 		} else {
 			initResult = m_sensor.initialize();
 		}
+		#endif
 
 		if (!initResult) {
 			m_Logger.error("Sensor failed to initialize!");
@@ -319,6 +333,9 @@ public:
 		if (calibrationType == 0) {
 			// ALL
 			calibrateSampleRate();
+			#if IMU == IMU_ICM42688
+
+			#else
 			if constexpr (HasMotionlessCalib) {
 				typename imu::MotionlessCalibrationData calibData;
 				m_sensor.motionlessCalibration(calibData);
@@ -328,6 +345,7 @@ public:
 					sizeof(calibData)
 				);
 			}
+			#endif
 			// Gryoscope offset calibration can only happen after any motionless
 			// gyroscope calibration, otherwise we are calculating the offset based
 			// on an incorrect starting point
@@ -340,6 +358,9 @@ public:
 		} else if (calibrationType == 3) {
 			calibrateAccel();
 		} else if (calibrationType == 4) {
+			#if IMU == IMU_ICM42688
+				m_Logger.info("Sensor ICM42688 doesn't provide any custom motionless calibration");
+			#else
 			if constexpr (HasMotionlessCalib) {
 				typename imu::MotionlessCalibrationData calibData;
 				m_sensor.motionlessCalibration(calibData);
@@ -352,6 +373,7 @@ public:
 				m_Logger.info("Sensor doesn't provide any custom motionless calibration"
 				);
 			}
+			#endif
 		}
 
 		saveCalibration();
@@ -598,8 +620,8 @@ public:
 	T<I2CImpl> m_sensor;
 	SlimeVR::Configuration::SoftFusionSensorConfig m_calibration
 		= {// let's create here transparent calibration that doesn't affect input data
-		   .ImuType = {imu::Type},
-		   .MotionlessDataLen = {MotionlessCalibDataSize()},
+		   .ImuType = imu::Type,
+		   .MotionlessDataLen = MotionlessCalibDataSize(),
 		   .A_B = {0.0, 0.0, 0.0},
 		   .A_Ainv = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}},
 		   .M_B = {0.0, 0.0, 0.0},
@@ -610,7 +632,7 @@ public:
 		   .G_Ts = imu::GyrTs,
 		   .M_Ts = imu::MagTs,
 		   .G_Sens = {1.0, 1.0, 1.0},
-		   .MotionlessData = {}
+		   .MotionlessData = {},
 		};
 
 	SensorStatus m_status = SensorStatus::SENSOR_OFFLINE;
